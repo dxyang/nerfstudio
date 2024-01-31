@@ -208,19 +208,20 @@ class GaussianSplatting(Model):
             colors_precomp = override_color
 
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
-        rendered_image, radii = rasterizer(
-            means3D=means3D,
-            means2D=means2D,
-            shs=shs,
-            colors_precomp=colors_precomp,
-            opacities=opacity,
-            scales=scales,
-            rotations=rotations,
-            cov3D_precomp=cov3D_precomp)
+        rendered_image, radii, depth = rasterizer(
+            means3D = means3D,
+            means2D = means2D,
+            shs = shs,
+            colors_precomp = colors_precomp,
+            opacities = opacity,
+            scales = scales,
+            rotations = rotations,
+            cov3D_precomp = cov3D_precomp)
 
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
         # They will be excluded from value updates used in the splitting criteria.
         return {"render": rendered_image,
+                "rendered_depth": depth,
                 "viewspace_points": screenspace_points,
                 "visibility_filter": radii > 0,
                 "radii": radii}
