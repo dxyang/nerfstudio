@@ -18,6 +18,7 @@ from nerfstudio.utils.gaussian_splatting_sh_utils import eval_sh
 from nerfstudio.cameras.gaussian_splatting_camera import Camera as GaussianSplattingCamera
 from nerfstudio.utils.gaussian_splatting_graphics_utils import getWorld2View2, focal2fov, fov2focal
 
+from deepseecolor import AttenuateNet, BackscatterNet
 
 @dataclass
 class GaussianSplattingModelConfig(ModelConfig):
@@ -53,6 +54,8 @@ class GaussianSplatting(Model):
             model_path: str = None,
             load_iteration: int = -1,
             orientation_transform: torch.Tensor = None,
+            backscatter_model_path: str = None,
+            attenuation_model_path: str = None,
     ) -> None:
         self.config = config
         self.model_path = model_path
@@ -67,6 +70,19 @@ class GaussianSplatting(Model):
         super().__init__(config, scene_box, num_train_data)
 
         self.scaling_modifier_slider = ViewerSlider(name="Scaling Modifier", default_value=1.0, min_value=0.0, max_value=1.0)
+
+        self.do_seathru = attenuation_model_path is not None and backscatter_model_path is not None
+        if self.do_seathru:
+            print(f"Loading backscatter model {backscatter_model_path}")
+            print(f"Loading attenuation model {attenuation_model_path}")
+            self.at_model = AttenuateNet()
+            self.bs_model = BackscatterNet()
+            self.at_model.load_state_dict(torch.load(attenuation_model_path))
+            self.bs_model.load_state_dict(torch.load(backscatter_model_path))
+            self.at_model.cuda()
+            self.bs_model.cuda()
+            self.at_model.eval()
+            self.bs_model.eval()
 
     def populate_modules(self):
         super().populate_modules()
@@ -103,12 +119,32 @@ class GaussianSplatting(Model):
             scaling_modifier=self.scaling_modifier_slider.value,
         )
 
-        render = render_results["render"]
+        image = render_results["render"]
+        depth_image = render_results["rendered_depth"]
+        max_depth = torch.max(depth_image)
+        rgb = torch.permute(torch.clamp(image, 0.0, 1.0), (1, 2, 0))
+        depth = torch.permute(depth_image / max_depth, (1, 2, 0))
 
-        rgb = torch.permute(torch.clamp(render, max=1.), (1, 2, 0))
-        return {
-            "rgb": rgb,
-        }
+        if self.do_seathru:
+            depth_batch = torch.unsqueeze(depth_image, dim=0)
+            rgb_batch = torch.unsqueeze(image, dim=0)
+            with torch.no_grad():
+                direct, attenuation_map = self.at_model(rgb_batch, depth_batch)
+                backscatter = self.bs_model(depth_batch)
+                underwater_image = torch.clamp(direct + backscatter, 0.0, 1.0)
+            return {
+                "rgb": rgb,
+                "depth": depth_image.permute(1, 2, 0),
+                "backscatter": backscatter.squeeze().permute(1, 2, 0),
+                "attenuation": attenuation_map.squeeze().permute(1, 2, 0),
+                "direct": direct.squeeze().permute(1, 2, 0),
+                "underwater_image": underwater_image.squeeze().permute(1, 2, 0),
+            }
+        else:
+            return {
+                "rgb": rgb,
+                "depth": depth,
+            }
 
     def ns2gs_camera(self, ns_camera):
         c2w = torch.clone(ns_camera.camera_to_worlds)

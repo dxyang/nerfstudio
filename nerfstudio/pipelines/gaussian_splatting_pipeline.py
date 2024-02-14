@@ -54,6 +54,8 @@ class GaussianSplattingPipeline(Pipeline):
     ):
         super().__init__()
         self.model_path = kwargs["model_path"]
+        self.backscatter_model_path = kwargs["backscatter_model_path"]
+        self.attenuation_model_path = kwargs["attenuation_model_path"]
 
         orientation_transform = None
         camera_pose_transform = None
