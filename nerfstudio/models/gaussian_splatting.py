@@ -71,7 +71,7 @@ class GaussianSplatting(Model):
 
         self.scaling_modifier_slider = ViewerSlider(name="Scaling Modifier", default_value=1.0, min_value=0.0, max_value=1.0)
 
-        self.do_seathru = attenuation_model_path is not None and backscatter_model_path is not None
+        self.do_seathru = attenuation_model_path != "None" and backscatter_model_path != "None"
         if self.do_seathru:
             print(f"Loading backscatter model {backscatter_model_path}")
             print(f"Loading attenuation model {attenuation_model_path}")
