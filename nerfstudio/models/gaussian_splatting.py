@@ -18,7 +18,7 @@ from nerfstudio.utils.gaussian_splatting_sh_utils import eval_sh
 from nerfstudio.cameras.gaussian_splatting_camera import Camera as GaussianSplattingCamera
 from nerfstudio.utils.gaussian_splatting_graphics_utils import getWorld2View2, focal2fov, fov2focal
 
-from deepseecolor import AttenuateNet, BackscatterNet
+from deepseecolor.models import AttenuateNet, BackscatterNet
 
 @dataclass
 class GaussianSplattingModelConfig(ModelConfig):
@@ -37,6 +37,9 @@ class PipelineParams():
         self.compute_cov3D_python = False
         self.debug = False
 
+def homogenize_points(points):
+    """Convert batched points (xyz) to (xyz1)."""
+    return torch.cat([points, torch.ones_like(points[..., :1])], dim=-1)
 
 class GaussianSplatting(Model):
     config: GaussianSplattingModelConfig
@@ -118,13 +121,24 @@ class GaussianSplatting(Model):
             bg_color=background,
             scaling_modifier=self.scaling_modifier_slider.value,
         )
+        depth_render_results = self.render_depth(
+            viewpoint_camera=viewpoint_camera,
+            pc=self.gaussian_model,
+            pipe=self.pipeline_params,
+            bg_color=background,
+            scaling_modifier=self.scaling_modifier_slider.value,
+        )
 
         image = render_results["render"]
-        depth_image = render_results["rendered_depth"]
+        depth_image = depth_render_results["render"]
         max_depth = torch.max(depth_image)
+        # print(torch.any(torch.isnan(depth_image)))
+        # print(torch.min(depth_image))
+        # print(torch.max(depth_image))
         rgb = torch.permute(torch.clamp(image, 0.0, 1.0), (1, 2, 0))
         depth = torch.permute(depth_image / max_depth, (1, 2, 0))
-
+        # select = torch.where(depth == 0.0)
+        # depth[select] = 1.0
         if self.do_seathru:
             depth_batch = torch.unsqueeze(depth_image, dim=0)
             rgb_batch = torch.unsqueeze(image, dim=0)
@@ -244,7 +258,7 @@ class GaussianSplatting(Model):
             colors_precomp = override_color
 
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
-        rendered_image, radii, depth = rasterizer(
+        rendered_image, rendered_alpha, radii = rasterizer(
             means3D = means3D,
             means2D = means2D,
             shs = shs,
@@ -257,7 +271,38 @@ class GaussianSplatting(Model):
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
         # They will be excluded from value updates used in the splitting criteria.
         return {"render": rendered_image,
-                "rendered_depth": depth,
+                "alpha": rendered_alpha,
                 "viewspace_points": screenspace_points,
                 "visibility_filter": radii > 0,
                 "radii": radii}
+
+    def render_depth(self, viewpoint_camera, pc, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0):
+        '''
+        Use the original gaussian splatting renderer but just pass in
+        a color override with precomputed colors as depth
+        '''
+        # calculate world space or camera space z coordinates of every gaussian
+        # obtain things
+        points_world = pc.get_xyz # torch.Size([25837, 3]), torch.float32
+        T_cam_world = viewpoint_camera.world_view_transform.T # torch.Size([4, 4]), torch.float32
+
+        # homogenize gaussian centers
+        points_world_homogenized = homogenize_points(points_world)
+
+        # apply T_cam_world to these points
+        #T_cam_world = T_world_cam.inverse()
+        points_cam_homogenized = (T_cam_world @ points_world_homogenized.T).T
+        points_cam = points_cam_homogenized[:, :3]
+
+        # get the zs and use as color for rendering
+        zs = points_cam[:, 2].unsqueeze(-1)
+        repeated_zs = zs.repeat(1, 3)
+
+        return self.render(
+            viewpoint_camera=viewpoint_camera,
+            pc=pc,
+            pipe=pipe,
+            bg_color=bg_color,
+            scaling_modifier=scaling_modifier,
+            override_color=repeated_zs
+        )
